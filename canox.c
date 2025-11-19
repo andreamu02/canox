@@ -8,30 +8,37 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 
-int s;
+int s_tx, s_rx;
 struct ifreq ifr;
 struct sockaddr_can addr;
 
-int connect_socket(){
-  if ((s = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0 ) {
-    perror("Cannot open the socket");
-    return 1;
+int connect_socket(char rx){
+  if (rx) {
+    if ((s_rx = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0 ) {
+      perror("Cannot open the socket");
+      return 1;
+    }
+  } else {
+    if ((s_tx = socket(PF_CAN, SOCK_RAW, CAN_RAW)) < 0 ) {
+      perror("Cannot open the socket");
+      return 1;
+    }
   }
   return 0;
 }
 
-int initialize_can_interface(char *interface_name) {
-  if (connect_socket()) {
+int initialize_can_interface(char *interface_name, char rx) {
+  if (connect_socket(rx)) {
     return 1;
   }
   strcpy(ifr.ifr_name, interface_name);
-  ioctl(s, SIOCGIFINDEX, &ifr);
+  ioctl(rx ? s_rx : s_tx, SIOCGIFINDEX, &ifr);
 
   memset(&addr, 0, sizeof(addr));
   addr.can_family = AF_CAN;
   addr.can_ifindex = ifr.ifr_ifindex;
 
-  if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+  if (bind(rx ? s_rx : s_tx, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
     perror("Bind");
     return 1;
   }
@@ -40,7 +47,7 @@ int initialize_can_interface(char *interface_name) {
 }
 
 int write_can_frame(struct can_frame *frame) {
-    if (write(s, frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
+    if (write(s_rx, frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
       perror("Error during write");
       return 1;  
   }
@@ -49,7 +56,7 @@ int write_can_frame(struct can_frame *frame) {
 
 int read_can_frame(struct can_frame *frame) {
   int nbytes;
-  nbytes = read(s, frame, sizeof(struct can_frame));
+  nbytes = read(s_tx, frame, sizeof(struct can_frame));
   if (nbytes < 0) {
      perror("Read");
      return 1;
@@ -63,7 +70,7 @@ int setup_filter_attack(int id) {
   rfilter[0].can_id   = id;
   rfilter[0].can_mask = CAN_SFF_MASK;
 
-  if (setsockopt(s, SOL_CAN_RAW, CAN_RAW_FILTER, &rfilter, sizeof(rfilter)) < 0) {
+  if (setsockopt(s_tx, SOL_CAN_RAW, CAN_RAW_FILTER, &rfilter, sizeof(rfilter)) < 0) {
     perror("setsockopt CAN_RAW_FILTER");
     return 1;
   }
