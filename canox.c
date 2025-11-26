@@ -47,7 +47,7 @@ int initialize_can_interface(char *interface_name, char rx) {
 }
 
 int write_can_frame(struct can_frame *frame) {
-    if (write(s_rx, frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
+    if (write(s_tx, frame, sizeof(struct can_frame)) != sizeof(struct can_frame)) {
       perror("Error during write");
       return 1;  
   }
@@ -56,7 +56,7 @@ int write_can_frame(struct can_frame *frame) {
 
 int read_can_frame(struct can_frame *frame) {
   int nbytes;
-  nbytes = read(s_tx, frame, sizeof(struct can_frame));
+  nbytes = read(s_rx, frame, sizeof(struct can_frame));
   if (nbytes < 0) {
      perror("Read");
      return 1;
@@ -70,9 +70,15 @@ int setup_filter_attack(int id) {
   rfilter[0].can_id   = id;
   rfilter[0].can_mask = CAN_SFF_MASK;
 
-  if (setsockopt(s_tx, SOL_CAN_RAW, CAN_RAW_FILTER, &rfilter, sizeof(rfilter)) < 0) {
+  if (setsockopt(s_rx, SOL_CAN_RAW, CAN_RAW_FILTER, &rfilter, sizeof(rfilter)) < 0) {
     perror("setsockopt CAN_RAW_FILTER");
     return 1;
   }
   return 0;
+}
+
+
+void cleanup() {
+    if (s_tx >= 0) close(s_tx);
+    if (s_rx >= 0) close(s_rx);
 }

