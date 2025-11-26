@@ -5,8 +5,8 @@
 #define CAN_RX        5
 #define HEARTBEAT_PIN 8
 
-#define ID1           0x110
-#define ID2           0x111
+#define ID1           0x52
+#define ID2           0x53
 
 CanFrame rxFrame;
 
