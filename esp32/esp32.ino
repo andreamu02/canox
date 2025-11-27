@@ -16,37 +16,75 @@ uint32_t lastSendTs = 0;
 uint32_t lastHeartbeatTs = 0;
 bool heartbeatState = false;
 
+static bool recovering = false;
+static uint32_t last_recover_attempt_ms = 0;
+
+
 void printAlertsAndStatus() {
-  // print alerts (your existing code)
   uint32_t alerts = 0;
   if (twai_read_alerts(&alerts, pdMS_TO_TICKS(0)) == ESP_OK && alerts) {
-    Serial.printf("ALERTS: 0x%08X\n", alerts);
-    if (alerts & TWAI_ALERT_BUS_OFF)       Serial.println("  -> ALERT: BUS_OFF");
-    if (alerts & TWAI_ALERT_BUS_RECOVERED) Serial.println("  -> ALERT: BUS_RECOVERED");
-    if (alerts & TWAI_ALERT_TX_FAILED)     Serial.println("  -> ALERT: TX_FAILED");
-    if (alerts & TWAI_ALERT_TX_SUCCESS)    Serial.println("  -> ALERT: TX_SUCCESS");
-    if (alerts & TWAI_ALERT_ABOVE_ERR_WARN)Serial.println("  -> ALERT: ABOVE_ERR_WARN");
-    if (alerts & TWAI_ALERT_BUS_ERROR)     Serial.println("  -> ALERT: BUS_ERROR");
-    if (alerts & TWAI_ALERT_RX_QUEUE_FULL) Serial.println("  -> ALERT: RX_QUEUE_FULL");
-  }
-
-  // always read status and print TEC/REC/state
-  twai_status_info_t s;
-  if (twai_get_status_info(&s) == ESP_OK) {
-    const char *state_str = "UNKNOWN";
-    switch (s.state) {
-      case TWAI_STATE_STOPPED:   state_str = "STOPPED";   break;
-      case TWAI_STATE_RUNNING:   state_str = "RUNNING";   break;
-      case TWAI_STATE_RECOVERING:state_str = "RECOVERING";break;
-      case TWAI_STATE_BUS_OFF:   state_str = "BUS_OFF";   break;
+    if (alerts & TWAI_ALERT_BUS_OFF) {
+      Serial.println("ALERT: BUS_OFF");
+      if (!recovering) {
+        // avoid repeated attempts (throttle)
+        if (millis() - last_recover_attempt_ms > 2000) {
+          esp_err_t r = twai_initiate_recovery();
+          if (r == ESP_OK) {
+            Serial.println("twai_initiate_recovery() called");
+            recovering = true;
+            last_recover_attempt_ms = millis();
+          } else {
+            Serial.printf("twai_initiate_recovery() failed: %d\n", r);
+          }
+        }
+      }
     }
-    Serial.printf("STATUS: state=%s(%d)  TEC=%u  REC=%u  msgs_to_tx=%u  msgs_to_rx=%u\n",
-                  state_str, s.state, s.tx_error_counter, s.rx_error_counter,
-                  s.msgs_to_tx, s.msgs_to_rx);
-  } else {
-    Serial.println("Failed to read TWAI status");
+    if (alerts & TWAI_ALERT_BUS_RECOVERED) {
+      Serial.println("ALERT: BUS_RECOVERED");
+      // driver is now in STOPPED state — restart it
+      if (twai_start() == ESP_OK) {
+        Serial.println("TWAI restarted after recovery");
+      } else {
+        Serial.println("Failed to restart TWAI — re-init may be required");
+        // fallback: re-init ESP32Can/driver if needed
+      }
+      recovering = false;
+    }
+
   }
 }
+
+// void printAlertsAndStatus() {
+//   // print alerts (your existing code)
+//   uint32_t alerts = 0;
+//   if (twai_read_alerts(&alerts, pdMS_TO_TICKS(0)) == ESP_OK && alerts) {
+//     Serial.printf("ALERTS: 0x%08X\n", alerts);
+//     if (alerts & TWAI_ALERT_BUS_OFF)       Serial.println("  -> ALERT: BUS_OFF");
+//     if (alerts & TWAI_ALERT_BUS_RECOVERED) Serial.println("  -> ALERT: BUS_RECOVERED");
+//     if (alerts & TWAI_ALERT_TX_FAILED)     Serial.println("  -> ALERT: TX_FAILED");
+//     if (alerts & TWAI_ALERT_TX_SUCCESS)    Serial.println("  -> ALERT: TX_SUCCESS");
+//     if (alerts & TWAI_ALERT_ABOVE_ERR_WARN)Serial.println("  -> ALERT: ABOVE_ERR_WARN");
+//     if (alerts & TWAI_ALERT_BUS_ERROR)     Serial.println("  -> ALERT: BUS_ERROR");
+//     if (alerts & TWAI_ALERT_RX_QUEUE_FULL) Serial.println("  -> ALERT: RX_QUEUE_FULL");
+//   }
+//
+//   // always read status and print TEC/REC/state
+//   twai_status_info_t s;
+//   if (twai_get_status_info(&s) == ESP_OK) {
+//     const char *state_str = "UNKNOWN";
+//     switch (s.state) {
+//       case TWAI_STATE_STOPPED:   state_str = "STOPPED";   break;
+//       case TWAI_STATE_RUNNING:   state_str = "RUNNING";   break;
+//       case TWAI_STATE_RECOVERING:state_str = "RECOVERING";break;
+//       case TWAI_STATE_BUS_OFF:   state_str = "BUS_OFF";   break;
+//     }
+//     Serial.printf("STATUS: state=%s(%d)  TEC=%u  REC=%u  msgs_to_tx=%u  msgs_to_rx=%u\n",
+//                   state_str, s.state, s.tx_error_counter, s.rx_error_counter,
+//                   s.msgs_to_tx, s.msgs_to_rx);
+//   } else {
+//     Serial.println("Failed to read TWAI status");
+//   }
+// }
 
 
 void setup() {
